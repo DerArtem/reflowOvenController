@@ -54,11 +54,17 @@ const char * ver = "3.1";
 #endif
 
 // Thermocouple via SPI
-#define THERMOCOUPLE1_CS  3
+#define THERMOCOUPLE1_CS  7
 
-#define PIN_HEATER   0 // SSR for the heater
-#define PIN_FAN      1 // SSR for the fan
-#define PIN_BEEPER   5 // Beeper Out
+#define PIN_HEATER   3 // SSR for the heater
+#define PIN_FAN      2 // SSR for the fan
+#define PIN_BEEPER   4 // Beeper Out
+
+/*
+#define PIN_HEATER   6 // SSR for the heater
+#define PIN_FAN      5 // SSR for the fan
+#define PIN_BEEPER   4 // Beeper Out
+*/
 
 #define PIN_ZX       2 // pin for zero crossing detector
 #define INT_ZX       1 // interrupt for zero crossing detector
@@ -75,6 +81,7 @@ const char * ver = "3.1";
 volatile uint32_t timerTicks     = 0;
 volatile uint32_t zeroCrossTicks = 0;
 volatile uint8_t  phaseCounter   = 0;
+volatile uint16_t Timer3Fake     = 0;
 
 char buf[20]; // generic char buffer
 
@@ -557,7 +564,7 @@ MenuItem(miFactoryReset, "Factory Reset", Menu::NullItem, miPidSettings, miExit,
 
 // ----------------------------------------------------------------------------
 
-#define NUMREADINGS 10
+#define NUMREADINGS 1
 
 typedef struct {
   double temp;
@@ -565,12 +572,9 @@ typedef struct {
 } Temp_t;
 
 Temp_t airTemp[NUMREADINGS];
-
-double readingsT1[NUMREADINGS]; // the readings used to make a stable temp rolling average
 double runningTotalRampRate;
 double rampRate = 0;
 double rateOfRise = 0;          // the result that is displayed
-double totalT1 = 0;             // the running total
 double averageT1 = 0;           // the average
 uint8_t index = 0;              // the index of the current reading
 
@@ -578,15 +582,22 @@ uint8_t index = 0;              // the index of the current reading
 // Ensure that Solid State Relais are off when starting
 //
 void setupRelayPins(void) {
-  DDRD  |= (1 << 2) | (1 << 3); // output
-  //PORTD &= ~((1 << 2) | (1 << 3));
-  PORTD |= (1 << 2) | (1 << 3); // off
+  pinMode(THERMOCOUPLE1_CS, OUTPUT);
+  pinMode(PIN_HEATER, OUTPUT);
+  pinMode(PIN_FAN, OUTPUT);
+  pinMode(PIN_BEEPER, OUTPUT);
+  
+  digitalWrite(PIN_HEATER, LOW);
+  digitalWrite(PIN_FAN, LOW);
+  digitalWrite(PIN_BEEPER, LOW);
 }
 
 void killRelayPins(void) {
   Timer1.stop();
-  detachInterrupt(INT_ZX);
-  PORTD |= (1 << 2) | (1 << 3);
+  //detachInterrupt(INT_ZX);
+  //PORTD |= (1 << 2) | (1 << 3);
+  digitalWrite(PIN_HEATER, LOW);
+  digitalWrite(PIN_FAN, LOW);
 }
 
 // ----------------------------------------------------------------------------
@@ -607,9 +618,9 @@ typedef struct Channel_s {
 
 Channel_t Channels[CHANNELS] = {
   // heater
-  { 0, 0, 0, false, 2 }, // PD2 == RX == Arduino Pin 0
+  { 0, 0, 0, false, PIN_HEATER }, // PD2 == RX == Arduino Pin 0
   // fan
-  { 0, 0, 0, false, 3 }  // PD3 == TX == Arduino Pin 1
+  { 0, 0, 0, false, PIN_FAN }  // PD3 == TX == Arduino Pin 1
 };
 
 // delay to align relay activation with the actual zero crossing
@@ -634,7 +645,7 @@ void zeroCrossingIsr(void) {
 
   // reset phase control timer
   phaseCounter = 0;
-  TCNT1 = 0;
+  //TCNT1 = 0;
 
   zeroCrossTicks++;
 
@@ -664,24 +675,38 @@ void zeroCrossingIsr(void) {
 void timerIsr(void) { // ticks with 100µS
   static uint32_t lastTicks = 0;
 
+  // Fake Timer3
+  Timer3Fake++;
+  if (Timer3Fake == 100) {
+    Timer3Fake = 0;
+    zeroCrossingIsr();
+  }
+
+
   // phase control for the fan 
   if (++phaseCounter > 90) {
     phaseCounter = 0;
   }
 
   if (phaseCounter > Channels[CHANNEL_FAN].target) {
-    PORTD &= ~(1 << Channels[CHANNEL_FAN].pin);
+    //PORTD &= ~(1 << Channels[CHANNEL_FAN].pin);
   }
   else {
-    PORTD |=  (1 << Channels[CHANNEL_FAN].pin);
+    //PORTD |=  (1 << Channels[CHANNEL_FAN].pin);
   }
 
   // wave packet control for heater
-  if (Channels[CHANNEL_HEATER].next > lastTicks // FIXME: this looses ticks when overflowing
-      && timerTicks > Channels[CHANNEL_HEATER].next) 
+  if (Channels[CHANNEL_HEATER].next > lastTicks && timerTicks > Channels[CHANNEL_HEATER].next) 
   {
-    if (Channels[CHANNEL_HEATER].action) PORTD |= (1 << Channels[CHANNEL_HEATER].pin);
-    else PORTD &= ~(1 << Channels[CHANNEL_HEATER].pin);
+    if (Channels[CHANNEL_HEATER].action) {
+      //PORTD |= (1 << Channels[CHANNEL_HEATER].pin);
+      digitalWrite(PIN_HEATER, LOW);
+    }
+    else {
+      //PORTD &= ~(1 << Channels[CHANNEL_HEATER].pin);
+      digitalWrite(PIN_HEATER, HIGH);
+      
+    }
     lastTicks = timerTicks;
   }
 
@@ -940,6 +965,7 @@ void setup() {
   Timer1.initialize(100);
   Timer1.attachInterrupt(timerIsr);
 
+/*
 #ifndef FAKE_HW
   pinMode(PIN_ZX, INPUT_PULLUP);
   attachInterrupt(INT_ZX, zeroCrossingIsr, RISING);
@@ -948,6 +974,7 @@ void setup() {
   Timer3.initialize(1000); // x10 speed
   Timer3.attachInterrupt(zeroCrossingIsr);
 #endif
+*/
 
 #ifdef WITH_SPLASH
   // splash screen
@@ -1064,8 +1091,6 @@ void toggleAutoTune() {
 #endif // PIDTUNE
 
 // ----------------------------------------------------------------------------
-
-uint8_t thermocoupleErrorCount;
 #define TC_ERROR_TOLERANCE 5 // allow for n consecutive errors due to noisy power supply before bailing out
 
 // ----------------------------------------------------------------------------
@@ -1148,37 +1173,10 @@ void loop(void)
   if (zeroCrossTicks - lastUpdate >= 10) {
     uint32_t deltaT = zeroCrossTicks - lastUpdate;
     lastUpdate = zeroCrossTicks;
-
-#ifndef FAKE_HW
+    
     readThermocouple(&A); // should be sufficient to read it every 250ms or 500ms
-#else
-    A.temperature = encAbsolute;
-#endif
 
-    if (A.stat > 0) {
-      thermocoupleErrorCount++;
-    }
-    else {
-      thermocoupleErrorCount = 0;
-    }
-
-    if (thermocoupleErrorCount > TC_ERROR_TOLERANCE) {
-      abortWithError(A.stat);
-    }
-
-#if 0 // verbose thermocouple error bits
-    tft.setCursor(10, 40);
-    for (uint8_t mask = B111; mask; mask >>= 1) {
-      tft.print(mask & A.stat ? '1' : '0');
-    }
-#endif
-      
-    // rolling average of the temp T1 and T2
-    totalT1 -= readingsT1[index];       // subtract the last reading
-    readingsT1[index] = A.temperature;
-    totalT1 += readingsT1[index];       // add the reading to the total
-    index = (index + 1) % NUMREADINGS;  // next position
-    averageT1 = totalT1 / NUMREADINGS;  // calculate the average temp
+    averageT1 =  A.temperature;
 
     // need to keep track of a few past readings in order to work out rate of rise
     for (int i = 1; i < NUMREADINGS; i++) { // iterate over all previous entries, moving them backwards one index
